@@ -1,0 +1,117 @@
+spec:
+  inputs:
+    env:
+      description: "Environnement"
+      type: string
+      default: "dev"
+      options:
+        - dev
+        - int
+        - qua
+        - prod
+        - prd
+        - qualiso
+
+    project_id:
+      description: "Project ID GitLab"
+      type: string
+      default: ""
+
+    url_public:
+      description: "URL publique"
+      type: string
+      default: ""
+
+    url_intra:
+      description: "URL interne"
+      type: string
+      default: ""
+
+    node_port:
+      description: "NodePort"
+      type: string
+      default: "32253"
+
+    branch_prefix:
+      description: "Prefix branch"
+      type: string
+      default: "sec/patch"
+
+---
+stages:
+  - validate
+  - report
+  - apply
+
+default:
+  tags:
+    - k8s
+
+variables:
+  TARGET_BRANCH: "roks"
+
+.before_script_ca: &before_script_ca
+  - set -euo pipefail
+  - echo "== Load CA (mkcert) =="
+  - |
+    if [ -n "${HARBOR_CA_CRT:-}" ] && [ -f "$HARBOR_CA_CRT" ]; then
+      cp "$HARBOR_CA_CRT" /usr/local/share/ca-certificates/dsk-rootca.crt
+      update-ca-certificates
+      export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+      export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+      export GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
+      echo "CA installed OK"
+    else
+      echo "HARBOR_CA_CRT not found (File variable) -> FAIL"
+      exit 1
+    fi
+
+validate-inputs:
+  stage: validate
+  image: harbor-01.dsk.lab/devops2/security-patch-bot:1.1
+  when: manual
+  script:
+    - *before_script_ca
+    - test -n "$[[ inputs.project_id ]]" || (echo "project_id is required" && exit 1)
+    - test -n "$[[ inputs.url_public ]]" || (echo "url_public is required" && exit 1)
+    - test -n "$[[ inputs.env ]]" || (echo "env is required" && exit 1)
+    - echo "Inputs OK"
+
+report:
+  stage: report
+  image: harbor-01.dsk.lab/devops2/security-patch-bot:1.1
+  needs:
+    - validate-inputs
+  when: manual
+  variables:
+    ENV: "$[[ inputs.env ]]"
+    PROJECT_ID: "$[[ inputs.project_id ]]"
+    URL_PUBLIC: "$[[ inputs.url_public ]]"
+    URL_INTRA: "$[[ inputs.url_intra ]]"
+    NODE_PORT: "$[[ inputs.node_port ]]"
+    BRANCH_PREFIX: "$[[ inputs.branch_prefix ]]"
+  script:
+    - *before_script_ca
+    - python patch_routes.py report
+  artifacts:
+    paths:
+      - report.md
+      - diff.txt
+    expire_in: 1 week
+
+apply:
+  stage: apply
+  image: harbor-01.dsk.lab/devops2/security-patch-bot:1.1
+  needs:
+    - report
+  when: manual
+  variables:
+    ENV: "$[[ inputs.env ]]"
+    PROJECT_ID: "$[[ inputs.project_id ]]"
+    URL_PUBLIC: "$[[ inputs.url_public ]]"
+    URL_INTRA: "$[[ inputs.url_intra ]]"
+    NODE_PORT: "$[[ inputs.node_port ]]"
+    BRANCH_PREFIX: "$[[ inputs.branch_prefix ]]"
+  script:
+    - *before_script_ca
+    - python patch_routes.py apply
